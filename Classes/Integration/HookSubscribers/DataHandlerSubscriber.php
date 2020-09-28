@@ -28,10 +28,44 @@ class DataHandlerSubscriber
 {
     protected static $copiedRecords = [];
 
+    public static $recordsHaveNotBeenCreatedYet = [];
+
+
     public function clearCacheCommand($command)
     {
         if ($command['cacheCmd'] === 'all' || $command['cacheCmd'] === 'system') {
             GeneralUtility::makeInstance(ContentTypeManager::class)->regenerate();
+        }
+    }
+
+    public function processDatamap_afterAllOperations(\TYPO3\CMS\Core\DataHandling\DataHandler &$pObj) {
+
+        if (!empty(static::$recordsHaveNotBeenCreatedYet)) {
+            foreach (static::$recordsHaveNotBeenCreatedYet as $key => $fields) {
+                $originalParentUid = $fields['originalParentUid'];
+
+                $newParentRecord = $this->getTranslatedVersionOfParentInLanguageOnPage((int) $fields['sys_language_uid'], (int) $fields['pid'], (int) $originalParentUid);
+
+                $newColumnPosition = ColumnNumberUtility::calculateColumnNumberForParentAndColumn(
+                    $newParentRecord['uid'],
+                    ColumnNumberUtility::calculateLocalColumnNumber($fields['colPos'])
+                );
+
+                $table = 'tt_content';
+                if ($newColumnPosition > 0 && $newParentRecord) {
+                    /** @var ConnectionPool $queryBuilder */
+                    $queryBuilder = GeneralUtility::makeInstance(ConnectionPool::class)->getQueryBuilderForTable($table);
+                    $queryBuilder
+                        ->update($table)->set('colPos', $newColumnPosition, true, \PDO::PARAM_INT)
+                        ->where(
+                            $queryBuilder->expr()->eq('uid', $queryBuilder->createNamedParameter($key, \PDO::PARAM_INT))
+                        )
+                        ->execute();
+
+                    // unset element
+                    unset(static::$recordsHaveNotBeenCreatedYet[$key]);
+                }
+            }
         }
     }
 
@@ -45,6 +79,10 @@ class DataHandlerSubscriber
      */
     public function processDatamap_afterDatabaseOperations($command, $table, $id, $fieldArray, $reference)
     {
+        if ($fieldArray['sys_language_uid']) {
+            $fieldArray['sys_language_uid'] = intval($fieldArray['sys_language_uid']);
+        }
+
         if ($table === 'content_types') {
             // Changing records in table "content_types" has to flush the system cache to regenerate various cached
             // definitions of plugins etc. that are based on those "content_types" records.
@@ -84,15 +122,23 @@ class DataHandlerSubscriber
             // right parent for the language and update the column position accordingly.
             $originalParentUid = ColumnNumberUtility::calculateParentUid($fieldArray['colPos']);
             $originalParent = $this->getSingleRecordWithoutRestrictions($table, $originalParentUid, 'sys_language_uid');
-            if ($originalParent['sys_language_uid'] !== $fieldArray['sys_language_uid']) {
-                // copyToLanguage case. Resolve the most recent translated version of the parent record in language of
-                // child record, and calculate the new column position number based on it.
-                $newParentRecord = $this->getTranslatedVersionOfParentInLanguageOnPage((int) $fieldArray['sys_language_uid'], (int) $fieldArray['pid'], (int) $originalParentUid);
+
+            // UPDATE always fix the colpos
+            //if ($originalParent['sys_language_uid'] !== $fieldArray['sys_language_uid']) {
+            // copyToLanguage case. Resolve the most recent translated version of the parent record in language of
+            // child record, and calculate the new column position number based on it.
+            $newParentRecord = $this->getTranslatedVersionOfParentInLanguageOnPage((int) $fieldArray['sys_language_uid'], (int) $fieldArray['pid'], (int) $originalParentUid);
+            if (!$newParentRecord) {
+                $fieldArray['originalParentUid'] = $originalParentUid;
+                static::$recordsHaveNotBeenCreatedYet[$reference->substNEWwithIDs[$id]] = $fieldArray;
+                return;
+            } else {
                 $newColumnPosition = ColumnNumberUtility::calculateColumnNumberForParentAndColumn(
                     $newParentRecord['uid'],
                     ColumnNumberUtility::calculateLocalColumnNumber($fieldArray['colPos'])
                 );
             }
+            //}
         }
 
         if ($newColumnPosition > 0) {
@@ -113,6 +159,17 @@ class DataHandlerSubscriber
      */
     public function processDatamap_preProcessFieldArray(array &$fieldArray, $table, $id, DataHandler $dataHandler)
     {
+        if (($table == 'pages' && !isset($fieldArray['tx_fed_page_flexform']) || !$fieldArray['tx_fed_page_flexform_sub']) && $fieldArray['l10n_parent'] > 0) {
+            $originalRecord = $this->getSingleRecordWithoutRestrictions($table, $fieldArray['l10n_parent'], '*');
+            if ($originalRecord === null) {
+                // Original record has been hard-deleted and can no longer be loaded. Processing must stop.
+                return;
+            } else {
+                $fieldArray['tx_fed_page_flexform'] = $originalRecord['tx_fed_page_flexform'];
+                $fieldArray['tx_fed_page_flexform_sub'] = $originalRecord['tx_fed_page_flexform_sub'];
+            }
+        }
+
         // Handle "$table.$field" named fields where $table is the valid TCA table name and $field is an existing TCA
         // field. Updated value will still be subject to permission checks.
         $resolver = GeneralUtility::makeInstance(ObjectManager::class)->get(ProviderResolver::class);
