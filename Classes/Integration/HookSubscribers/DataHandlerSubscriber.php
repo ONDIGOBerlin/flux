@@ -159,7 +159,8 @@ class DataHandlerSubscriber
      */
     public function processDatamap_preProcessFieldArray(array &$fieldArray, $table, $id, DataHandler $dataHandler)
     {
-        if (($table == 'pages' && !isset($fieldArray['tx_fed_page_flexform']) || !$fieldArray['tx_fed_page_flexform_sub']) && $fieldArray['l10n_parent'] > 0) {
+
+        if ($table == 'pages' && $fieldArray['l10n_parent'] > 0 && (!isset($fieldArray['tx_fed_page_flexform']) || !$fieldArray['tx_fed_page_flexform_sub'])) {
             $originalRecord = $this->getSingleRecordWithoutRestrictions($table, $fieldArray['l10n_parent'], '*');
             if ($originalRecord === null) {
                 // Original record has been hard-deleted and can no longer be loaded. Processing must stop.
@@ -167,6 +168,16 @@ class DataHandlerSubscriber
             } else {
                 $fieldArray['tx_fed_page_flexform'] = $originalRecord['tx_fed_page_flexform'];
                 $fieldArray['tx_fed_page_flexform_sub'] = $originalRecord['tx_fed_page_flexform_sub'];
+            }
+        }
+        if ($table == 'pages' && $fieldArray['l10n_parent'] > 0 && (!isset($fieldArray['tx_fed_page_controller_action']) || !$fieldArray['tx_fed_page_controller_action_sub'])) {
+            $originalRecord = $this->getSingleRecordWithoutRestrictions($table, $fieldArray['l10n_parent'], '*');
+            if ($originalRecord === null) {
+                // Original record has been hard-deleted and can no longer be loaded. Processing must stop.
+                return;
+            } else {
+                $fieldArray['tx_fed_page_controller_action'] = $originalRecord['tx_fed_page_controller_action'];
+                $fieldArray['tx_fed_page_controller_action_sub'] = $originalRecord['tx_fed_page_controller_action_sub'];
             }
         }
 
